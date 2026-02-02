@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beekeeping Pro - Full Rounded</title>
+    <script src="https://www.gstatic.com/charts/loader.js"></script>
+    <style>
+        :root { --bg: #121212; --card: #1e1e1e; --text: #ffffff; --accent: #1a73e8; --border: #333; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 10px; }
+        .yield-banner { background: linear-gradient(135deg, #1e1e1e, #2d2d2d); padding: 15px; border-radius: 15px; margin-bottom: 15px; text-align: center; border: 1px solid var(--border); }
+        .yield-val { font-size: 2.2em; font-weight: bold; }
+        .toolbar { background: var(--card); padding: 10px; border-radius: 12px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border); }
+        .grid-container { display: grid; grid-template-columns: 1fr; gap: 15px; }
+        @media(min-width: 600px) { .grid-container { grid-template-columns: 1fr 1fr; } }
+        .card { background: var(--card); border-radius: 15px; padding: 15px; border-top: 5px solid var(--accent); position: relative; }
+        .alert-blink { border: 3px solid #ff5252 !important; animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { background-color: #4a1010; } }
+        .header-flex { display: flex; justify-content: space-between; align-items: center; }
+        h3 { margin: 0; font-size: 0.85em; color: #888; text-transform: uppercase; }
+        .icon-box { font-size: 1.4em; }
+        .value-display { font-size: 2.2em; font-weight: bold; margin: 5px 0; display: flex; align-items: baseline; }
+        .stats-row { display: flex; gap: 10px; font-size: 0.75em; color: #666; margin-bottom: 10px; }
+        .chart-box { width: 100%; height: 160px; }
+        select, .audio-btn { background: #333; color: white; border: none; padding: 8px; border-radius: 8px; font-size: 11px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <div class="yield-banner">
+        <div style="font-size: 0.8em; color: #888; margin-bottom: 5px;">ΔΙΑΦΟΡΑ 24Ω (21:00 - 21:00)</div>
+        <div id="24hYield" class="yield-val">--</div>
+        <div id="yieldDate" style="font-size: 0.65em; color: #555; margin-top: 5px;">Ενημέρωση...</div>
+    </div>
+
+    <div class="toolbar">
+        <button class="audio-btn" id="enableAudio">🔔 ΗΧΟΣ OFF</button>
+        <select id="resultsRange" onchange="loadData()">
+            <option value="10">10 μετρήσεις</option>
+            <option value="20" selected>20 μετρήσεις</option>
+            <option value="30">30 μετρήσεις</option>
+        </select>
+    </div>
+
+    <div id="dashboard" class="grid-container"></div>
+
+    <script>
+        const channelID = '2517278'; 
+        const readAPIKey = '0HHHC7KRAYZMOBN2';
+        const WEIGHT_ALERT_THRESHOLD = 0.4; // Παραμένει σε kg για τον έλεγχο
+        
+        let audioEnabled = false;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playAlertSound() {
+            if (!audioEnabled) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+        }
+
+        document.getElementById('enableAudio').addEventListener('click', function() {
+            audioCtx.resume(); audioEnabled = true;
+            this.innerText = "🔔 ΗΧΟΣ ON"; this.style.background = "#4caf50";
+        });
+
+        const fieldConfig = {
+            'field1': { label: 'Βάρος', unit: 'gr', icon: '⚖️', color: '#ff5252', decimals: 0 },
+            'field2': { label: 'Υγρασία', unit: '%', icon: '💧', color: '#448aff', decimals: 1 },
+            'field3': { label: 'Θερμοκρασία', unit: '°C', icon: '🌡️', color: '#4caf50', decimals: 1 },
+            'field4': { label: 'Μπαταρία', unit: 'V', icon: '🔋', color: '#ffc107', decimals: 2 },
+            'field5': { label: 'Διαφορά', unit: 'gr', icon: '📉', color: '#ff4081', decimals: 0 },
+            'field6': { label: 'GSM Signal', unit: 'dBm', icon: '📶', color: '#00bcd4', decimals: 0 }
+        };
+
+        google.charts.load('current', {'packages':['corechart']});
+        google.charts.setOnLoadCallback(() => { loadData(); calculate24hYield(); });
+
+        async function calculate24hYield() {
+            try {
+                const res = await fetch(`https://api.thingspeak.com/channels/${channelID}/fields/1.json?api_key=${readAPIKey}&results=250`);
+                const data = await res.json();
+                const feeds = data.feeds;
+                const getWeightAt21 = (targetDate) => {
+                    const target = new Date(targetDate);
+                    target.setHours(21, 0, 0);
+                    return feeds.reduce((prev, curr) => 
+                        Math.abs(new Date(curr.created_at) - target) < Math.abs(new Date(prev.created_at) - target) ? curr : prev
+                    );
+                };
+                const today = new Date();
+                const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+                const entryToday = getWeightAt21(today);
+                const entryYesterday = getWeightAt21(yesterday);
+                
+                // Υπολογισμός διαφοράς 24ώρου (εδώ το μετατρέπουμε σε kg για το banner)
+                const diffKg = ((parseFloat(entryToday.field1) - parseFloat(entryYesterday.field1)) / 1000).toFixed(3);
+                
+                document.getElementById('24hYield').innerHTML = `${diffKg > 0 ? '+' : ''}${diffKg} <span style="font-size:0.4em">kg</span>`;
+                document.getElementById('24hYield').style.color = diffKg >= 0 ? '#4caf50' : '#ff5252';
+                document.getElementById('yieldDate').innerText = `Σύγκριση 21:00 χθες - 21:00 σήμερα`;
+            } catch(e) { console.error(e); }
+        }
+
+        function loadData() {
+            const results = document.getElementById('resultsRange').value;
+            fetch(`https://api.thingspeak.com/channels/${channelID}/feeds.json?api_key=${readAPIKey}&results=${results}`)
+            .then(res => res.json()).then(data => {
+                const dashboard = document.getElementById('dashboard');
+                dashboard.innerHTML = '';
+                for (let i = 1; i <= 6; i++) {
+                    const key = 'field' + i;
+                    if (!data.channel[key]) continue;
+                    const conf = fieldConfig[key];
+                    const feeds = data.feeds.map(f => parseFloat(f[key])).filter(v => !isNaN(v));
+                    const lastVal = feeds[feeds.length - 1];
+                    const maxVal = Math.max(...feeds);
+                    const minVal = Math.min(...feeds);
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    
+                    // Alert logic: αν η διαφορά (field5) ξεπεράσει το όριο kg
+                    if (key === 'field5' && Math.abs(lastVal/1000) >= WEIGHT_ALERT_THRESHOLD) {
+                        card.classList.add('alert-blink');
+                        playAlertSound();
+                    }
+
+                    card.innerHTML = `
+                        <div class="header-flex">
+                            <h3>${conf.label}</h3>
+                            <span class="icon-box">${conf.icon}</span>
+                        </div>
+                        <div class="value-display" style="color:${conf.color}">
+                            ${lastVal.toFixed(conf.decimals)}<span style="font-size:0.4em; color:#666; margin-left:5px;">${conf.unit}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span>MIN: ${minVal.toFixed(conf.decimals)}</span>
+                            <span>MAX: ${maxVal.toFixed(conf.decimals)}</span>
+                        </div>
+                        <div id="chart_${i}" class="chart-box"></div>
+                    `;
+                    dashboard.appendChild(card);
+                    drawChart(data.feeds, i, conf.label, conf.color);
+                }
+            });
+        }
+
+        function drawChart(feeds, i, label, color) {
+            const dataTable = new google.visualization.DataTable();
+            dataTable.addColumn('string', 'Time');
+            dataTable.addColumn('number', label);
+            feeds.forEach(f => {
+                let val = parseFloat(f['field' + i]);
+                if (!isNaN(val)) dataTable.addRow([new Date(f.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), val]);
+            });
+            new google.visualization.LineChart(document.getElementById('chart_'+i)).draw(dataTable, {
+                backgroundColor: 'transparent', curveType: 'function', legend: 'none',
+                hAxis: { textPosition: 'none', baselineColor: 'none', gridlines: {color:'none'} },
+                vAxis: { gridlines: {color:'#2a2a2a'}, textStyle: {color:'#555', fontSize: 10} },
+                colors: [color], lineWidth: 3, pointsVisible: true, pointSize: 6, chartArea: {width:'95%', height:'85%'}
+            });
+        }
+        setInterval(() => { loadData(); calculate24hYield(); }, 60000);
+    </script>
+</body>
+                                                      </html>
+                                                      
